@@ -7,6 +7,11 @@ import time
 from datetime import datetime
 import sys
 
+from scipy.ndimage import gaussian_filter
+from PIL import Image
+from PIL import ImageFilter
+
+
 class ColorRangeTester:
     def __init__(self, image_dir='./image', results_dir='./results/color_filters'):
         """Inicializa o testador de faixas de cores.
@@ -274,7 +279,7 @@ def main():
     elif option == "2":
         image_path = input("Digite o caminho da imagem para teste (ex: ./image/1f1f.png): ")
         if not image_path:
-            image_path = "./image/1f1f.png"
+            image_path = "./image/3zwv.png"
         tester.show_test_window(image_path)
     elif option == "3":
         print("\n" + "-"*80)
