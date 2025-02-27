@@ -5,6 +5,7 @@ from scipy.ndimage import gaussian_filter, median_filter, binary_fill_holes
 import skimage.morphology as morphology
 from skimage.segmentation import clear_border
 from collections import Counter
+import pytesseract
 
 def adaptive_threshold(img_array, block_size=15, c=5):
     """Apply adaptive thresholding to handle varying lighting conditions."""
@@ -214,6 +215,13 @@ def try_multiple_filters(image):
         (175, 140, 1.1, 1.2),
         (195, 155, 0.9, 1.1),
         (180, 145, 1.2, 0.9),
+        # Adding more parameter combinations
+        (190, 160, 0.8, 1.3),
+        (170, 145, 1.0, 1.2),
+        (180, 155, 1.1, 0.8),
+        (200, 145, 0.9, 1.0),
+        (175, 150, 1.2, 1.1),
+        (195, 140, 1.0, 0.9),
     ]
     
     results = []
@@ -236,3 +244,132 @@ def preprocess_pipeline(image):
     filter_results = try_multiple_filters(image)
     
     # Add enhanced original
+    all_results = [enhanced_original] + filter_results
+    
+    # Additional techniques
+    # 1. Binarization with Otsu's method
+    img_array = np.array(image.convert('L'))
+    _, otsu = cv2.threshold(img_array, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    all_results.append(Image.fromarray(otsu))
+    
+    # 2. Edge enhancement
+    edge_enhanced = image.filter(ImageFilter.EDGE_ENHANCE_MORE)
+    all_results.append(edge_enhanced)
+    
+    # 3. Emboss filter
+    emboss = image.filter(ImageFilter.EMBOSS)
+    all_results.append(emboss)
+    
+    # 4. Color inversion
+    inverted = ImageEnhance.Brightness(image).enhance(-1.0)
+    all_results.append(inverted)
+    
+    return all_results
+
+def apply_multiple_ocr(images, min_confidence=70):
+    """Apply OCR to multiple preprocessed images and return the best result."""
+    # OCR configuration options to try
+    configs = [
+        '--psm 8 --oem 3 -c tessedit_char_whitelist=0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ',
+        '--psm 7 --oem 3 -c tessedit_char_whitelist=0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ',
+        '--psm 11 --oem 3 -c tessedit_char_whitelist=0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ',
+        '--psm 6 --oem 3 -c tessedit_char_whitelist=0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ',
+        # New configurations
+        '--psm 10 --oem 3 -c tessedit_char_whitelist=0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ',
+        '--psm 13 --oem 3 -c tessedit_char_whitelist=0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ',
+        '--psm 9 --oem 3 -c tessedit_char_whitelist=0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ',
+    ]
+    
+    results = []
+    
+    # Try each image with each OCR configuration
+    for img in images:
+        for config in configs:
+            try:
+                # Get OCR results with confidence
+                data = pytesseract.image_to_data(img, config=config, output_type=pytesseract.Output.DICT)
+                
+                # Extract text and confidence scores
+                texts = []
+                for i in range(len(data['text'])):
+                    if int(data['conf'][i]) > min_confidence:
+                        text = data['text'][i].strip()
+                        if text and len(text) >= 3 and len(text) <= 8:
+                            texts.append(text)
+                
+                # If we got valid text, add to results
+                if texts:
+                    text = ''.join(texts)
+                    text = ''.join(c for c in text if c.isalnum())
+                    if 3 <= len(text) <= 8:
+                        results.append(text)
+            except Exception:
+                continue
+            
+            # Also try direct string extraction
+            try:
+                text = pytesseract.image_to_string(img, config=config).strip()
+                text = ''.join(c for c in text if c.isalnum())
+                if 3 <= len(text) <= 8:
+                    results.append(text)
+            except Exception:
+                continue
+    
+    # Get the most common result
+    if results:
+        most_common = Counter(results).most_common(1)
+        return most_common[0][0] if most_common else results[0]
+    
+    return ""
+
+def advanced_noise_removal(img_array):
+    """Apply more advanced noise removal techniques"""
+    # Bilateral filter preserves edges while removing noise
+    bilateral = cv2.bilateralFilter(img_array, 9, 75, 75)
+    
+    # Non-local means denoising
+    nlm = cv2.fastNlMeansDenoising(bilateral, None, 10, 7, 21)
+    
+    # Morphological closing to fill small holes
+    kernel = np.ones((2, 2), np.uint8)
+    closing = cv2.morphologyEx(nlm, cv2.MORPH_CLOSE, kernel)
+    
+    return closing
+
+def scale_image(img, scale_factor=2.0):
+    """Scale up image for better OCR performance"""
+    if isinstance(img, np.ndarray):
+        h, w = img.shape[:2]
+        return cv2.resize(img, (int(w * scale_factor), int(h * scale_factor)), 
+                         interpolation=cv2.INTER_CUBIC)
+    else:
+        w, h = img.size
+        return img.resize((int(w * scale_factor), int(h * scale_factor)), 
+                         Image.BICUBIC)
+
+def solve_captcha_with_advanced_filters(image_data, min_confidence=70):
+    """Main function to process captcha using advanced filters"""
+    # Convert input to PIL image if needed
+    if isinstance(image_data, str) or isinstance(image_data, bytes):
+        from io import BytesIO
+        import base64
+        
+        if isinstance(image_data, str):
+            image_data = base64.b64decode(image_data)
+            
+        img = Image.open(BytesIO(image_data))
+    elif isinstance(image_data, np.ndarray):
+        img = Image.fromarray(image_data)
+    else:
+        img = image_data
+        
+    # Scale up for better results
+    img = scale_image(img, 2.0)
+    
+    # Apply preprocessing pipeline
+    preprocessed_images = preprocess_pipeline(img)
+    
+    # Apply OCR on preprocessed images
+    result = apply_multiple_ocr(preprocessed_images, min_confidence)
+    
+    return result

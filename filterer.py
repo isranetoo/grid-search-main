@@ -2,7 +2,7 @@
 from io import BytesIO
 
 import numpy as np
-
+import os
 from PIL import Image
 from PIL import ImageFilter
 from scipy.ndimage import gaussian_filter
@@ -11,8 +11,8 @@ from pylab import axes, ylabel, xlabel, subplot, draw, show, imshow
 from matplotlib.widgets import Slider, Button
 
 
-files = './images'
-img = "4fw64r.jpeg"
+files = os.path.dirname(os.path.abspath(__file__)) + "/"
+img = "j2nn.png"
 with open(f"{files}{img}", "rb") as bytes_data:
     original = Image.open(BytesIO(bytes_data.read()))
 

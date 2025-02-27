@@ -10,6 +10,7 @@ from scipy.ndimage import gaussian_filter, median_filter
 import time
 from datetime import datetime
 from collections import Counter
+import sys
 
 # Configura o caminho do Tesseract no Windows
 if os.name == "nt":
@@ -78,20 +79,42 @@ def preprocess_image(image, th1, th2, sigma1, sigma2):
     cnts = cnts[0] if len(cnts) == 2 else cnts[1]
     for c in cnts:
         cv2.drawContours(img_array, [c], -1, (255,255,255), 3)
+        
+    # Adiciona técnicas avançadas de remoção de ruído
+    bilateral = cv2.bilateralFilter(img_array, 9, 75, 75)
+    denoised = cv2.fastNlMeansDenoising(bilateral, None, 10, 7, 21)
     
-    return Image.fromarray(img_array)
+    # Aplica detecção de bordas para realçar caracteres
+    edges = cv2.Canny(denoised, 100, 200)
+    dilated_edges = cv2.dilate(edges, np.ones((2,2), np.uint8), iterations=1)
+    
+    # Combina a imagem original com as bordas realçadas
+    combined = cv2.bitwise_and(denoised, denoised, mask=255-dilated_edges)
+    
+    return Image.fromarray(combined)
 
 def extract_text_from_image(image, ocr_configs):
     """Extrai texto da imagem usando múltiplas configurações do Tesseract OCR."""
     results = []
     
+    # Adiciona escala da imagem para melhorar OCR
+    w, h = image.size
+    scaled_image = image.resize((w*2, h*2), Image.BICUBIC)
+    
     for config in ocr_configs:
-        text = pytesseract.image_to_string(image, config=config)
+        text = pytesseract.image_to_string(scaled_image, config=config)
         # Remove espaços e caracteres de nova linha
         text = text.strip().replace(" ", "").replace("\n", "")
         # Filtra para manter apenas caracteres alfanuméricos
         text = ''.join(c for c in text if c.isalnum())
         if 3 <= len(text) <= 8:  # Comprimento típico de CAPTCHAs
+            results.append(text)
+            
+        # Tenta também com a imagem original
+        text = pytesseract.image_to_string(image, config=config)
+        text = text.strip().replace(" ", "").replace("\n", "")
+        text = ''.join(c for c in text if c.isalnum())
+        if 3 <= len(text) <= 8:
             results.append(text)
     
     # Se temos resultados, pegamos o mais comum ou o primeiro
@@ -112,7 +135,15 @@ def solve_captcha_local(th1, th2, sigma1, sigma2, image_data_base64):
             '--psm 8 --oem 3 -c tessedit_char_whitelist=0123456789abcdefghijklmnopqrstuvwxyz',
             '--psm 7 --oem 3 -c tessedit_char_whitelist=0123456789abcdefghijklmnopqrstuvwxyz',
             '--psm 11 --oem 3 -c tessedit_char_whitelist=0123456789abcdefghijklmnopqrstuvwxyz',
-            '--psm 6 --oem 3 -c tessedit_char_whitelist=0123456789abcdefghijklmnopqrstuvwxyz'
+            '--psm 6 --oem 3 -c tessedit_char_whitelist=0123456789abcdefghijklmnopqrstuvwxyz',
+            # Novas configurações
+            '--psm 10 --oem 3 -c tessedit_char_whitelist=0123456789abcdefghijklmnopqrstuvwxyz',
+            '--psm 13 --oem 3 -c tessedit_char_whitelist=0123456789abcdefghijklmnopqrstuvwxyz',
+            '--psm 9 --oem 3 -c tessedit_char_whitelist=0123456789abcdefghijklmnopqrstuvwxyz',
+            '--psm 12 --oem 3 -c tessedit_char_whitelist=0123456789abcdefghijklmnopqrstuvwxyz',
+            # Variações com diferentes whitelist characters
+            '--psm 8 --oem 3 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz',
+            '--psm 7 --oem 3 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz',
         ]
         
         return extract_text_from_image(processed_image, ocr_configs)
@@ -156,6 +187,11 @@ def grid_search_on_images(image_folder, param_ranges, results_file):
                 for sigma2 in param_ranges["sigma2"]:
                     current_combination += 1
                     scores = {}
+                    combination_results = {}
+                    
+                    print("\n" + "-"*80)
+                    print(f"COMBINAÇÃO {current_combination}/{total_combinations}: th1={th1}, th2={th2}, sigma1={sigma1}, sigma2={sigma2}")
+                    print("-"*80)
                     
                     # Para cada combinação de parâmetros, testa todas as imagens
                     for img_file in image_files:
@@ -163,7 +199,14 @@ def grid_search_on_images(image_folder, param_ranges, results_file):
                         prediction = solve_captcha_local(
                             th1, th2, sigma1, sigma2, image_data[img_file]
                         )
-                        scores[expected] = 1 if prediction.lower() == expected.lower() else 0
+                        
+                        match = prediction.lower() == expected.lower() if prediction else False
+                        scores[expected] = 1 if match else 0
+                        combination_results[expected] = prediction
+                        
+                        # Terminal output similar ao tester_advanced_filters.py
+                        status = "\033[1;32mOK\033[0m" if match else f"\033[1;31mERROR\033[0m"
+                        print(f"Imagem: {img_file:<20} | Esperado: {expected:<10} | Detectado: {prediction:<10} | {status}")
                     
                     # Calcula a acurácia
                     accuracy = sum(scores.values())
@@ -173,6 +216,9 @@ def grid_search_on_images(image_folder, param_ranges, results_file):
                     if accuracy > best_accuracy:
                         best_accuracy = accuracy
                         best_params = (th1, th2, sigma1, sigma2)
+                        print("\n\033[1;33m" + "!"*80 + "\033[0m")
+                        print(f"\033[1;33mNOVOS MELHORES PARÂMETROS ENCONTRADOS! Acurácia: {accuracy}/{total_images} ({accuracy/total_images:.1%})\033[0m")
+                        print("\033[1;33m" + "!"*80 + "\033[0m")
                     
                     # Exibe progresso
                     elapsed_time = time.time() - start_time
@@ -180,37 +226,54 @@ def grid_search_on_images(image_folder, param_ranges, results_file):
                     estimated_total_time = elapsed_time / progress if progress > 0 else 0
                     remaining_time = estimated_total_time - elapsed_time if estimated_total_time > 0 else 0
                     
-                    print(f"Progresso: {current_combination}/{total_combinations} " +
-                          f"({progress:.1%}) - Tempo restante: {remaining_time/60:.1f} min")
-                    print(f"Parâmetros: {th1}, {th2}, {sigma1}, {sigma2} - " +
-                          f"Acertos: \033[1;{'32' if accuracy >= total_images/2 else '31'}m{accuracy}/{total_images}\033[0m " +
-                          f"({accuracy/total_images:.1%})")
+                    print("\n" + "-"*80)
+                    print(f"RESUMO DA COMBINAÇÃO {current_combination}/{total_combinations}")
+                    print(f"Parâmetros: th1={th1}, th2={th2}, sigma1={sigma1}, sigma2={sigma2}")
+                    print(f"Acertos: {accuracy}/{total_images} ({accuracy/total_images:.1%})")
+                    print(f"Melhor até agora: {best_accuracy}/{total_images} ({best_accuracy/total_images:.1%})")
+                    print(f"Progresso: {current_combination}/{total_combinations} ({progress:.1%})")
+                    print(f"Tempo decorrido: {elapsed_time/60:.1f} minutos")
+                    print(f"Tempo restante estimado: {remaining_time/60:.1f} minutos")
+                    print(f"Tempo total estimado: {estimated_total_time/60:.1f} minutos")
+                    print("-"*80 + "\n")
+                    
+                    # Exibe uma barra de progresso simplificada
+                    progress_bar_length = 50
+                    progress_filled = int(progress * progress_bar_length)
+                    progress_bar = "[" + "=" * progress_filled + " " * (progress_bar_length - progress_filled) + "]"
+                    sys.stdout.write(f"\r{progress_bar} {progress:.1%}")
+                    sys.stdout.flush()
                     
                     # Salva resultados parciais periodicamente
-                    if current_combination % 10 == 0:
-                        print("Salvando resultados parciais...")
+                    if current_combination % 5 == 0:
+                        print("\nSalvando resultados parciais...")
                         pd.DataFrame.from_dict(results, orient="index").to_csv(results_file)
     
     # Exibe os melhores resultados
-    print(f"\nMelhores parâmetros encontrados: {best_params}")
+    print("\n" + "="*80)
+    print("RESULTADOS FINAIS")
+    print("="*80)
+    print(f"Melhores parâmetros encontrados: th1={best_params[0]}, th2={best_params[1]}, sigma1={best_params[2]}, sigma2={best_params[3]}")
     print(f"Melhor acurácia: {best_accuracy}/{total_images} ({best_accuracy/total_images:.1%})")
+    print(f"Tempo total de execução: {(time.time() - start_time)/60:.1f} minutos")
+    print("="*80)
     
     # Salva os resultados finais
     pd.DataFrame.from_dict(results, orient="index").to_csv(results_file)
     print(f"Resultados salvos em '{results_file}'")
     
-    return results, best_params, best_accuracy
+    return results, best_params, best_accuracy, total_images
 
 # Configurações e execução
 if __name__ == "__main__":
     image_folder = r'C:\Users\IsraelAntunes\Desktop\grid-search-main\image'
     
-    # Parâmetros mais amplos e granulares para encontrar melhores combinações
+    # Parâmetros atualizados conforme solicitado
     param_ranges = {
-        "th1": [160, 170, 175, 180, 185, 190, 195, 200],
-        "th2": [135, 140, 145, 150, 155, 160],
-        "sigma1": [0.8, 0.9, 1.0, 1.1, 1.2, 1.3],
-        "sigma2": [0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5],
+        "th1": [99,100, 101, 102, 103, 104, 105, 106, 107, 108, 109],
+        "th2": [140, 145, 150, 155, 160, 165, 170, 175, 180, 185, 190],
+        "sigma1": [0.75, 0.85, 0.95, 1.05, 1.15, 1.25, 1.35, 1.5, 1.65, 1.75, 1.85],
+        "sigma2": [0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8],
     }
     
     # Cria um nome de arquivo com timestamp
@@ -220,11 +283,26 @@ if __name__ == "__main__":
     # Cria o diretório de resultados se não existir
     os.makedirs("./results", exist_ok=True)
     
+    print("\n" + "*"*80)
+    print("* GRID SEARCH - DETECTOR SIMPLES DE CAPTCHAS")
+    print("*"*80)
+    print(f"* Data/hora: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+    print(f"* Diretório de imagens: {image_folder}")
+    print(f"* Arquivo de resultados: {results_file}")
+    total_combinations = (
+        len(param_ranges["th1"]) * 
+        len(param_ranges["th2"]) * 
+        len(param_ranges["sigma1"]) * 
+        len(param_ranges["sigma2"])
+    )
+    print(f"* Total de combinações: {total_combinations}")
+    print("*"*80 + "\n")
+    
     # Executa a busca em grade
-    results, best_params, best_accuracy = grid_search_on_images(image_folder, param_ranges, results_file)
+    results, best_params, best_accuracy, total_images = grid_search_on_images(image_folder, param_ranges, results_file)
     
     # Salva os melhores parâmetros em um arquivo separado
     with open(f"./results/best_params_{timestamp}.txt", "w") as f:
         f.write(f"Best parameters: th1={best_params[0]}, th2={best_params[1]}, " +
                 f"sigma1={best_params[2]}, sigma2={best_params[3]}\n")
-        f.write(f"Accuracy: {best_accuracy}")
+        f.write(f"Accuracy: {best_accuracy}/{total_images} ({best_accuracy/total_images:.1%})")
