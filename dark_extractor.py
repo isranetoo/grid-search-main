@@ -43,7 +43,7 @@ class DarkColorExtractor:
         Path(self.results_dir).mkdir(parents=True, exist_ok=True)
         
     def extract_dark_colors(self, image_path, value_threshold=100, output_dir=None):
-        """Extrai cores escuras da imagem, removendo as cores claras.
+        """Extrai máscara de cores escuras da imagem.
         
         Args:
             image_path: Caminho para a imagem
@@ -52,17 +52,17 @@ class DarkColorExtractor:
             output_dir: Diretório opcional para salvar os resultados
             
         Returns:
-            Tuple contendo (imagem original, máscara escura, resultado escuro, resultado claro)
+            Tuple contendo (imagem original, máscara escura)
         """
         if not os.path.exists(image_path):
             print(f"\033[1;31mImagem não encontrada: {image_path}\033[0m")
-            return None, None, None, None
+            return None, None
             
         # Carrega a imagem
         img = cv2.imread(image_path)
         if img is None:
             print(f"\033[1;31mErro ao carregar a imagem: {image_path}\033[0m")
-            return None, None, None, None
+            return None, None
             
         # Converte para HSV (Hue, Saturation, Value)
         # O canal Value (V) representa o brilho - usaremos isso para determinar as cores escuras
@@ -75,21 +75,6 @@ class DarkColorExtractor:
         dark_mask = v_channel < value_threshold
         dark_mask = dark_mask.astype(np.uint8) * 255
         
-        # Cria a máscara para cores claras (inverso da máscara escura)
-        light_mask = cv2.bitwise_not(dark_mask)
-        
-        # Aplica as máscaras para obter as partes escuras e claras
-        dark_result = cv2.bitwise_and(img, img, mask=dark_mask)
-        light_result = cv2.bitwise_and(img, img, mask=light_mask)
-        
-        # Caso queira um fundo branco nas áreas removidas
-        white_bg = np.ones_like(img) * 255
-        dark_with_white_bg = np.where(
-            np.repeat(dark_mask[:, :, np.newaxis], 3, axis=2) > 0,
-            dark_result,
-            white_bg
-        ).astype(np.uint8)
-        
         # Define o diretório de saída
         if output_dir is None:
             output_dir = self.results_dir
@@ -98,21 +83,18 @@ class DarkColorExtractor:
         # Extrai o nome base da imagem
         base_name = os.path.basename(image_path).split('.')[0]
         
-        # Salva as imagens resultantes
+        # Salva apenas a imagem original e a máscara
         cv2.imwrite(os.path.join(output_dir, f"{base_name}_original.jpg"), img)
         cv2.imwrite(os.path.join(output_dir, f"{base_name}_dark_mask.jpg"), dark_mask)
-        cv2.imwrite(os.path.join(output_dir, f"{base_name}_dark_only.jpg"), dark_result)
-        cv2.imwrite(os.path.join(output_dir, f"{base_name}_dark_white_bg.jpg"), dark_with_white_bg)
-        cv2.imwrite(os.path.join(output_dir, f"{base_name}_light_only.jpg"), light_result)
         
         print(f"\033[1;32mProcessamento concluído para {os.path.basename(image_path)}\033[0m")
         print(f"Threshold de escuridão: {value_threshold}")
         print(f"Resultados salvos em: {output_dir}/")
         
-        return img, dark_mask, dark_result, light_result
+        return img, dark_mask
     
     def process_batch(self, file_pattern="*.png", value_threshold=100):
-        """Processa um lote de imagens, extraindo as cores escuras.
+        """Processa um lote de imagens, extraindo as máscaras de cores escuras.
         
         Args:
             file_pattern: Padrão para encontrar arquivos (ex: "*.png")
@@ -133,7 +115,7 @@ class DarkColorExtractor:
         
         # Exibe informações iniciais
         print("\n" + "="*80)
-        print(f"EXTRAÇÃO DE CORES ESCURAS EM LOTE")
+        print(f"EXTRAÇÃO DE MÁSCARAS DE CORES ESCURAS EM LOTE")
         print(f"Threshold de valor (escuridão): {value_threshold}")
         print("="*80)
         
@@ -155,7 +137,7 @@ class DarkColorExtractor:
             sys.stdout.flush()
             
             # Processa a imagem
-            img, mask, dark, light = self.extract_dark_colors(image_path, value_threshold)
+            img, mask = self.extract_dark_colors(image_path, value_threshold)
             
             if img is not None:
                 success_count += 1
@@ -226,29 +208,14 @@ class DarkColorExtractor:
                 dark_mask = v_channel < threshold
                 dark_mask = dark_mask.astype(np.uint8) * 255
                 
-                # Aplica a máscara para obter as partes escuras
-                dark_result = cv2.bitwise_and(img, img, mask=dark_mask)
-                
-                # Cria o resultado com fundo branco
-                white_bg = np.ones_like(img) * 255
-                dark_with_white_bg = np.where(
-                    np.repeat(dark_mask[:, :, np.newaxis], 3, axis=2) > 0,
-                    dark_result,
-                    white_bg
-                ).astype(np.uint8)
-                
                 # Redimensiona as imagens para exibição
                 scale = 0.8
                 display_img = cv2.resize(img, (0, 0), fx=scale, fy=scale)
                 display_mask = cv2.cvtColor(cv2.resize(dark_mask, (0, 0), fx=scale, fy=scale), cv2.COLOR_GRAY2BGR)
-                display_dark = cv2.resize(dark_result, (0, 0), fx=scale, fy=scale)
-                display_white_bg = cv2.resize(dark_with_white_bg, (0, 0), fx=scale, fy=scale)
                 
                 # Exibe as imagens
                 cv2.imshow('Imagem Original', display_img)
                 cv2.imshow('Máscara de Cores Escuras', display_mask)
-                cv2.imshow('Cores Escuras', display_dark)
-                cv2.imshow('Resultado com Fundo Branco', display_white_bg)
                 
                 # Mostra o threshold atual no terminal
                 sys.stdout.write(f"\rThreshold de escuridão atual: {threshold}")
@@ -422,3 +389,4 @@ def show_menu(extractor):
 
 if __name__ == "__main__":
     main()
+
